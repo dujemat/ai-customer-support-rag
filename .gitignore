@@ -28,7 +28,7 @@ dist/
 *.egg-info/
 
 # PDFs / data
-docs/*.pdf
+# docs/*.pdf zasad nećemo
 
 # Secrets
 *.key
