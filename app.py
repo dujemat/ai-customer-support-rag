@@ -60,12 +60,9 @@ def generate_answer(context, question, user_id):
     prompt = f"""
 Ti si prijateljski i opušten customer support agent za webshop "TechStore".
 
-Odgovaraj prirodno, kratko i jasno na hrvatskom, kao stvarna osoba.
+Odgovaraj prirodno i kratko na hrvatskom.
 
-PRAVILA:
-- Ako imaš kontekst → koristi ga
-- Ako nema → pokušaj pomoći općenito
-- Budi opušten (npr. "možeš", "nema problema")
+Ako nemaš info iz konteksta, pokušaj pomoći općenito.
 
 KONTEKST:
 {context}
@@ -86,21 +83,13 @@ ODGOVOR:
 
     except Exception as e:
         print("❌ GENERATION ERROR:", e)
-        answer = "Došlo je do greške, pokušaj ponovno 👍"
+        answer = "Ups, nešto je zapelo 😅 Aj probaj ponovno."
 
-    # welcome poruka
     if first_time:
-        answer = (
-            "👋 Dobrodošli na TechStore webshop podršku!\n\n"
-            + answer
-        )
+        answer = "👋 Dobrodošli na TechStore podršku!\n\n" + answer
         user_memory[user_id] = True
 
-    # rate limit napomena
-    answer += (
-        "\n\n⚠️ Napomena: Možemo poslati jednu poruku po minuti. "
-        "Ako ne dobiješ odgovor odmah, slobodno pošalji ponovno 👍"
-    )
+    answer += "\n\n⚠️ Možemo poslati jednu poruku po minuti. Ako ne dođe odmah, probaj opet 👍"
 
     return answer
 
@@ -128,8 +117,7 @@ def load_pdfs(folder="docs"):
                 for page in reader.pages:
                     text += page.extract_text() or ""
 
-                c = chunk_text(text)
-                chunks.extend(c)
+                chunks.extend(chunk_text(text))
 
         print(f"✅ Loaded {len(chunks)} chunks.")
 
@@ -143,7 +131,7 @@ def startup():
 
 
 # ----------------------------
-# SIMPLE RAG (KEYWORD)
+# SIMPLE RAG
 # ----------------------------
 
 def run_rag(question: str, user_id: str):
@@ -151,18 +139,16 @@ def run_rag(question: str, user_id: str):
     if not chunks:
         return generate_answer("", question, user_id)
 
-    question_words = question.lower().split()
+    words = question.lower().split()
 
-    scored_chunks = []
-
+    scored = []
     for chunk in chunks:
-        score = sum(word in chunk.lower() for word in question_words)
-        scored_chunks.append((score, chunk))
+        score = sum(word in chunk.lower() for word in words)
+        scored.append((score, chunk))
 
-    scored_chunks.sort(reverse=True)
+    scored.sort(reverse=True)
 
-    top_chunks = [chunk for score, chunk in scored_chunks if score > 0][:3]
-
+    top_chunks = [c for s, c in scored if s > 0][:3]
     context = "\n\n".join(top_chunks)
 
     return generate_answer(context, question, user_id)
@@ -173,6 +159,8 @@ def run_rag(question: str, user_id: str):
 # ----------------------------
 
 def send_whatsapp_message(to, text):
+
+    print("📤 SENDING TO:", to)
 
     url = "https://api.wasenderapi.com/api/send-message"
 
@@ -188,7 +176,7 @@ def send_whatsapp_message(to, text):
 
     try:
         res = requests.post(url, json=payload, headers=headers)
-        print("📤 SEND STATUS:", res.status_code, res.text)
+        print("📤 STATUS:", res.status_code, res.text)
 
     except Exception as e:
         print("❌ SEND ERROR:", e)
@@ -205,7 +193,13 @@ async def webhook(req: Request):
     print("📩 RAW:", data)
 
     try:
-        msg_obj = data.get("data", {}).get("messages", {})
+        messages = data.get("data", {}).get("messages", [])
+
+        # 🔥 FIX: može biti lista
+        if isinstance(messages, list) and len(messages) > 0:
+            msg_obj = messages[0]
+        else:
+            msg_obj = messages
 
         message = (
             msg_obj.get("message", {}).get("conversation")
@@ -218,13 +212,28 @@ async def webhook(req: Request):
         print("❌ PARSE ERROR:", e)
         return {"status": "error"}
 
+    print("👉 MESSAGE:", message)
+    print("👉 SENDER:", sender)
+
     if not message or not sender:
+        print("⚠️ EMPTY MESSAGE")
         return {"status": "ignored"}
 
-    print(f"📩 Poruka od {sender}: {message}")
-
-    answer = run_rag(message, sender)
+    try:
+        answer = run_rag(message, sender)
+    except Exception as e:
+        print("❌ RAG ERROR:", e)
+        answer = "Ups, nešto je zapelo 😅"
 
     send_whatsapp_message(sender, answer)
 
     return {"status": "ok"}
+
+
+# ----------------------------
+# ROOT (da nema 404)
+# ----------------------------
+
+@app.get("/")
+def home():
+    return {"status": "alive"}
