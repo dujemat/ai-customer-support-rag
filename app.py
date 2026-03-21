@@ -22,6 +22,9 @@ if not WASENDER_TOKEN:
 
 genai.configure(api_key=API_KEY)
 
+# 👉 Gemini model (GLOBALNO da se ne kreira svaki put)
+model = genai.GenerativeModel("gemini-1.5-flash")
+
 app = FastAPI()
 
 chunks = []
@@ -60,9 +63,12 @@ def generate_answer(context, question, user_id):
     prompt = f"""
 Ti si prijateljski i opušten customer support agent za webshop "TechStore".
 
-Odgovaraj prirodno i kratko na hrvatskom.
+Odgovaraj prirodno, kratko i jasno na hrvatskom, kao stvarna osoba.
 
-Ako nemaš info iz konteksta, pokušaj pomoći općenito.
+PRAVILA:
+- Ako imaš kontekst → koristi ga
+- Ako nema → pokušaj pomoći općenito
+- Budi opušten (npr. "možeš", "nema problema")
 
 KONTEKST:
 {context}
@@ -74,22 +80,27 @@ ODGOVOR:
 """
 
     try:
-        response = genai.generate_content(
-            model="models/gemini-1.5-flash",
-            contents=prompt
-        )
+        response = model.generate_content(prompt)
 
-        answer = response.text.strip()
+        answer = response.text.strip() if response.text else "Hmm, nisam siguran, možeš malo preciznije? 🙂"
 
     except Exception as e:
         print("❌ GENERATION ERROR:", e)
         answer = "Ups, nešto je zapelo 😅 Aj probaj ponovno."
 
+    # welcome poruka
     if first_time:
-        answer = "👋 Dobrodošli na TechStore podršku!\n\n" + answer
+        answer = (
+            "👋 Dobrodošli na TechStore webshop podršku!\n\n"
+            + answer
+        )
         user_memory[user_id] = True
 
-    answer += "\n\n⚠️ Možemo poslati jednu poruku po minuti. Ako ne dođe odmah, probaj opet 👍"
+    # rate limit napomena
+    answer += (
+        "\n\n⚠️ Napomena: Možemo poslati jednu poruku po minuti. "
+        "Ako ne dobiješ odgovor odmah, slobodno pošalji ponovno 👍"
+    )
 
     return answer
 
@@ -117,7 +128,8 @@ def load_pdfs(folder="docs"):
                 for page in reader.pages:
                     text += page.extract_text() or ""
 
-                chunks.extend(chunk_text(text))
+                c = chunk_text(text)
+                chunks.extend(c)
 
         print(f"✅ Loaded {len(chunks)} chunks.")
 
@@ -139,16 +151,18 @@ def run_rag(question: str, user_id: str):
     if not chunks:
         return generate_answer("", question, user_id)
 
-    words = question.lower().split()
+    question_words = question.lower().split()
 
-    scored = []
+    scored_chunks = []
+
     for chunk in chunks:
-        score = sum(word in chunk.lower() for word in words)
-        scored.append((score, chunk))
+        score = sum(word in chunk.lower() for word in question_words)
+        scored_chunks.append((score, chunk))
 
-    scored.sort(reverse=True)
+    scored_chunks.sort(reverse=True)
 
-    top_chunks = [c for s, c in scored if s > 0][:3]
+    top_chunks = [chunk for score, chunk in scored_chunks if score > 0][:3]
+
     context = "\n\n".join(top_chunks)
 
     return generate_answer(context, question, user_id)
@@ -159,8 +173,6 @@ def run_rag(question: str, user_id: str):
 # ----------------------------
 
 def send_whatsapp_message(to, text):
-
-    print("📤 SENDING TO:", to)
 
     url = "https://api.wasenderapi.com/api/send-message"
 
@@ -176,7 +188,7 @@ def send_whatsapp_message(to, text):
 
     try:
         res = requests.post(url, json=payload, headers=headers)
-        print("📤 STATUS:", res.status_code, res.text)
+        print("📤 SEND STATUS:", res.status_code, res.text)
 
     except Exception as e:
         print("❌ SEND ERROR:", e)
@@ -189,17 +201,20 @@ def send_whatsapp_message(to, text):
 @app.post("/webhook")
 async def webhook(req: Request):
 
-    data = await req.json()
-    print("📩 RAW:", data)
+    # DEBUG RAW
+    body = await req.body()
+    print("🔥 RAW BODY:", body)
 
     try:
-        messages = data.get("data", {}).get("messages", [])
+        data = await req.json()
+    except Exception:
+        print("❌ NEMA JSON BODY")
+        return {"status": "no json"}
 
-        # 🔥 FIX: može biti lista
-        if isinstance(messages, list) and len(messages) > 0:
-            msg_obj = messages[0]
-        else:
-            msg_obj = messages
+    print("📩 PARSED JSON:", data)
+
+    try:
+        msg_obj = data.get("data", {}).get("messages", {})
 
         message = (
             msg_obj.get("message", {}).get("conversation")
@@ -212,18 +227,13 @@ async def webhook(req: Request):
         print("❌ PARSE ERROR:", e)
         return {"status": "error"}
 
-    print("👉 MESSAGE:", message)
-    print("👉 SENDER:", sender)
-
     if not message or not sender:
-        print("⚠️ EMPTY MESSAGE")
+        print("⚠️ NEMA MESSAGE ILI SENDER")
         return {"status": "ignored"}
 
-    try:
-        answer = run_rag(message, sender)
-    except Exception as e:
-        print("❌ RAG ERROR:", e)
-        answer = "Ups, nešto je zapelo 😅"
+    print(f"📩 Poruka od {sender}: {message}")
+
+    answer = run_rag(message, sender)
 
     send_whatsapp_message(sender, answer)
 
@@ -231,9 +241,18 @@ async def webhook(req: Request):
 
 
 # ----------------------------
-# ROOT (da nema 404)
+# TEST CHAT (BROWSER)
+# ----------------------------
+
+@app.get("/chat")
+def chat(q: str):
+    return {"response": run_rag(q, "test_user")}
+
+
+# ----------------------------
+# ROOT
 # ----------------------------
 
 @app.get("/")
-def home():
-    return {"status": "alive"}
+def root():
+    return {"status": "AI Customer Support running 🚀"}
