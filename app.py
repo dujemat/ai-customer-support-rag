@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request
 import google.generativeai as genai
 from pypdf import PdfReader
-import numpy as np
 import re
 import os
 import requests
@@ -26,24 +25,11 @@ genai.configure(api_key=API_KEY)
 app = FastAPI()
 
 chunks = []
-embeddings = []
-sources = []
 user_memory = {}
 
 # ----------------------------
 # UTILS
 # ----------------------------
-
-def cosine_similarity(a, b):
-    a = np.array(a)
-    b = np.array(b)
-
-    denom = np.linalg.norm(a) * np.linalg.norm(b)
-    if denom == 0:
-        return 0
-
-    return float(np.dot(a, b) / denom)
-
 
 def chunk_text(text, chunk_size=2000, overlap=200):
     text = re.sub(r"\s+", " ", text).strip()
@@ -63,20 +49,6 @@ def chunk_text(text, chunk_size=2000, overlap=200):
     return chunks
 
 
-def embed_texts(texts):
-    try:
-        result = genai.embed_content(
-            model="models/text-embedding-004",
-            content=texts
-        )
-
-        return [e["embedding"] for e in result["embedding"]]
-
-    except Exception as e:
-        print("❌ EMBEDDING ERROR:", e)
-        return []
-
-
 # ----------------------------
 # GENERATE ANSWER
 # ----------------------------
@@ -91,9 +63,9 @@ Ti si prijateljski i opušten customer support agent za webshop "TechStore".
 Odgovaraj prirodno, kratko i jasno na hrvatskom, kao stvarna osoba.
 
 PRAVILA:
-- Ako odgovor postoji u kontekstu → koristi ga
-- Ako NE postoji → reci da nemaš točnu info i ponudi pomoć
-- Budi opušten (npr. "možeš", "nema problema", "slobodno pitaj")
+- Ako imaš kontekst → koristi ga
+- Ako nema → pokušaj pomoći općenito
+- Budi opušten (npr. "možeš", "nema problema")
 
 KONTEKST:
 {context}
@@ -114,7 +86,7 @@ ODGOVOR:
 
     except Exception as e:
         print("❌ GENERATION ERROR:", e)
-        answer = "Došlo je do greške pri odgovoru, pokušaj ponovno 👍"
+        answer = "Došlo je do greške, pokušaj ponovno 👍"
 
     # welcome poruka
     if first_time:
@@ -124,7 +96,7 @@ ODGOVOR:
         )
         user_memory[user_id] = True
 
-    # rate limit
+    # rate limit napomena
     answer += (
         "\n\n⚠️ Napomena: Možemo poslati jednu poruku po minuti. "
         "Ako ne dobiješ odgovor odmah, slobodno pošalji ponovno 👍"
@@ -138,11 +110,9 @@ ODGOVOR:
 # ----------------------------
 
 def load_pdfs(folder="docs"):
-    global chunks, embeddings, sources
+    global chunks
 
     chunks = []
-    embeddings = []
-    sources = []
 
     if not os.path.exists(folder):
         print("⚠️ docs folder ne postoji")
@@ -159,13 +129,7 @@ def load_pdfs(folder="docs"):
                     text += page.extract_text() or ""
 
                 c = chunk_text(text)
-                e = embed_texts(c)
-
-                for chunk, emb in zip(c, e):
-                    if emb:  # sigurnost
-                        chunks.append(chunk)
-                        embeddings.append(emb)
-                        sources.append(filename)
+                chunks.extend(c)
 
         print(f"✅ Loaded {len(chunks)} chunks.")
 
@@ -179,30 +143,27 @@ def startup():
 
 
 # ----------------------------
-# RAG
+# SIMPLE RAG (KEYWORD)
 # ----------------------------
 
 def run_rag(question: str, user_id: str):
 
-    if not embeddings:
-        return "⚠️ Trenutno nemam učitane informacije, ali slobodno pitaj pa ću pokušati pomoći 👍"
+    if not chunks:
+        return generate_answer("", question, user_id)
 
-    q_embedding = embed_texts([question])
+    question_words = question.lower().split()
 
-    if not q_embedding:
-        return "⚠️ Trenutno imam problem s obradom upita, pokušaj ponovno 👍"
+    scored_chunks = []
 
-    q_embedding = q_embedding[0]
+    for chunk in chunks:
+        score = sum(word in chunk.lower() for word in question_words)
+        scored_chunks.append((score, chunk))
 
-    scores = []
-    for idx, emb in enumerate(embeddings):
-        score = cosine_similarity(q_embedding, emb)
-        scores.append((score, idx))
+    scored_chunks.sort(reverse=True)
 
-    scores.sort(reverse=True)
-    top = scores[:3]
+    top_chunks = [chunk for score, chunk in scored_chunks if score > 0][:3]
 
-    context = "\n\n".join([chunks[idx] for _, idx in top])
+    context = "\n\n".join(top_chunks)
 
     return generate_answer(context, question, user_id)
 
