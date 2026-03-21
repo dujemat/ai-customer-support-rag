@@ -64,12 +64,17 @@ def chunk_text(text, chunk_size=2000, overlap=200):
 
 
 def embed_texts(texts):
-    result = genai.embed_content(
-        model="models/embedding-001",
-        content=texts
-    )
+    try:
+        result = genai.embed_content(
+            model="models/text-embedding-004",
+            content=texts
+        )
 
-    return [e["embedding"] for e in result["embedding"]]
+        return [e["embedding"] for e in result["embedding"]]
+
+    except Exception as e:
+        print("❌ EMBEDDING ERROR:", e)
+        return []
 
 
 # ----------------------------
@@ -99,14 +104,19 @@ PITANJE:
 ODGOVOR:
 """
 
-    response = genai.generate_content(
-        model="models/gemini-1.5-flash",
-        contents=prompt
-    )
+    try:
+        response = genai.generate_content(
+            model="models/gemini-1.5-flash",
+            contents=prompt
+        )
 
-    answer = response.text.strip()
+        answer = response.text.strip()
 
-    # welcome message
+    except Exception as e:
+        print("❌ GENERATION ERROR:", e)
+        answer = "Došlo je do greške pri odgovoru, pokušaj ponovno 👍"
+
+    # welcome poruka
     if first_time:
         answer = (
             "👋 Dobrodošli na TechStore webshop podršku!\n\n"
@@ -114,7 +124,7 @@ ODGOVOR:
         )
         user_memory[user_id] = True
 
-    # rate limit note
+    # rate limit
     answer += (
         "\n\n⚠️ Napomena: Možemo poslati jednu poruku po minuti. "
         "Ako ne dobiješ odgovor odmah, slobodno pošalji ponovno 👍"
@@ -138,24 +148,29 @@ def load_pdfs(folder="docs"):
         print("⚠️ docs folder ne postoji")
         return
 
-    for filename in os.listdir(folder):
-        if filename.endswith(".pdf"):
-            path = os.path.join(folder, filename)
-            reader = PdfReader(path)
+    try:
+        for filename in os.listdir(folder):
+            if filename.endswith(".pdf"):
+                path = os.path.join(folder, filename)
+                reader = PdfReader(path)
 
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() or ""
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text() or ""
 
-            c = chunk_text(text)
-            e = embed_texts(c)
+                c = chunk_text(text)
+                e = embed_texts(c)
 
-            for chunk, emb in zip(c, e):
-                chunks.append(chunk)
-                embeddings.append(emb)
-                sources.append(filename)
+                for chunk, emb in zip(c, e):
+                    if emb:  # sigurnost
+                        chunks.append(chunk)
+                        embeddings.append(emb)
+                        sources.append(filename)
 
-    print(f"✅ Loaded {len(chunks)} chunks.")
+        print(f"✅ Loaded {len(chunks)} chunks.")
+
+    except Exception as e:
+        print("❌ ERROR LOADING PDFS:", e)
 
 
 @app.on_event("startup")
@@ -170,9 +185,14 @@ def startup():
 def run_rag(question: str, user_id: str):
 
     if not embeddings:
-        return "⚠️ Nema učitanih dokumenata."
+        return "⚠️ Trenutno nemam učitane informacije, ali slobodno pitaj pa ću pokušati pomoći 👍"
 
-    q_embedding = embed_texts([question])[0]
+    q_embedding = embed_texts([question])
+
+    if not q_embedding:
+        return "⚠️ Trenutno imam problem s obradom upita, pokušaj ponovno 👍"
+
+    q_embedding = q_embedding[0]
 
     scores = []
     for idx, emb in enumerate(embeddings):
@@ -205,9 +225,12 @@ def send_whatsapp_message(to, text):
         "text": text
     }
 
-    res = requests.post(url, json=payload, headers=headers)
+    try:
+        res = requests.post(url, json=payload, headers=headers)
+        print("📤 SEND STATUS:", res.status_code, res.text)
 
-    print("📤 SEND STATUS:", res.status_code, res.text)
+    except Exception as e:
+        print("❌ SEND ERROR:", e)
 
 
 # ----------------------------
