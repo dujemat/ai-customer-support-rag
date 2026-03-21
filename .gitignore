@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual env
+venv/
+.env/
+.venv/
+
+# Env variables
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Build / cache
+build/
+dist/
+*.egg-info/
+
+# PDFs / data
+docs/*.pdf
+
+# Secrets
+*.key
+*.pem
+
+# Railway (nije nužno, ali ok)
+.railway/

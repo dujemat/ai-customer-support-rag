@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+google-generativeai
+pypdf
+numpy
+requests
+python-dotenv
