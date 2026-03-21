@@ -1,16 +1,11 @@
 from fastapi import FastAPI, Request
-from google import genai
+import google.generativeai as genai
 from pypdf import PdfReader
 import numpy as np
 import re
 import os
 import requests
 from dotenv import load_dotenv
-
-# ----------------------------
-# MEMORY
-# ----------------------------
-user_memory = {}
 
 # ----------------------------
 # LOAD ENV
@@ -21,22 +16,24 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 WASENDER_TOKEN = os.getenv("WASENDER_TOKEN")
 
 if not API_KEY:
-    raise ValueError("❌ GEMINI_API_KEY nije postavljen u .env")
+    raise ValueError("❌ GEMINI_API_KEY nije postavljen")
 
 if not WASENDER_TOKEN:
-    raise ValueError("❌ WASENDER_TOKEN nije postavljen u .env")
+    raise ValueError("❌ WASENDER_TOKEN nije postavljen")
 
-client = genai.Client(api_key=API_KEY)
+genai.configure(api_key=API_KEY)
 
 app = FastAPI()
 
 chunks = []
 embeddings = []
 sources = []
+user_memory = {}
 
 # ----------------------------
 # UTILS
 # ----------------------------
+
 def cosine_similarity(a, b):
     a = np.array(a)
     b = np.array(b)
@@ -67,16 +64,18 @@ def chunk_text(text, chunk_size=2000, overlap=200):
 
 
 def embed_texts(texts):
-    result = client.models.embed_content(
-        model="gemini-embedding-001",
-        contents=texts
+    result = genai.embed_content(
+        model="models/embedding-001",
+        content=texts
     )
-    return [e.values for e in result.embeddings]
+
+    return [e["embedding"] for e in result["embedding"]]
 
 
 # ----------------------------
 # GENERATE ANSWER
 # ----------------------------
+
 def generate_answer(context, question, user_id):
 
     first_time = user_id not in user_memory
@@ -84,14 +83,12 @@ def generate_answer(context, question, user_id):
     prompt = f"""
 Ti si prijateljski i opušten customer support agent za webshop "TechStore".
 
-Odgovaraj prirodno, kratko i jasno na hrvatskom, kao stvarna osoba (ne robotski).
+Odgovaraj prirodno, kratko i jasno na hrvatskom, kao stvarna osoba.
 
 PRAVILA:
 - Ako odgovor postoji u kontekstu → koristi ga
-- Ako NE postoji → nemoj reći "ne znam" nego:
-  → reci da nemaš točnu info i ponudi pomoć ili potpitanje
+- Ako NE postoji → reci da nemaš točnu info i ponudi pomoć
 - Budi opušten (npr. "možeš", "nema problema", "slobodno pitaj")
-- Ako pitanje nije jasno → ponudi opcije (proizvodi, dostava, narudžbe)
 
 KONTEKST:
 {context}
@@ -102,20 +99,25 @@ PITANJE:
 ODGOVOR:
 """
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
+    response = genai.generate_content(
+        model="models/gemini-1.5-flash",
         contents=prompt
     )
 
     answer = response.text.strip()
 
+    # welcome message
     if first_time:
-        answer = "👋 Dobrodošli na TechStore webshop podršku!\n\n" + answer
+        answer = (
+            "👋 Dobrodošli na TechStore webshop podršku!\n\n"
+            + answer
+        )
         user_memory[user_id] = True
 
+    # rate limit note
     answer += (
-        "\n\n⚠️ Napomena: Zbog ograničenja sustava možemo poslati jednu poruku po minuti. "
-        "Ako ne dobiješ odgovor odmah, slobodno pošalji ponovno za minutu 👍"
+        "\n\n⚠️ Napomena: Možemo poslati jednu poruku po minuti. "
+        "Ako ne dobiješ odgovor odmah, slobodno pošalji ponovno 👍"
     )
 
     return answer
@@ -124,6 +126,7 @@ ODGOVOR:
 # ----------------------------
 # LOAD PDFS
 # ----------------------------
+
 def load_pdfs(folder="docs"):
     global chunks, embeddings, sources
 
@@ -152,7 +155,7 @@ def load_pdfs(folder="docs"):
                 embeddings.append(emb)
                 sources.append(filename)
 
-    print(f"Loaded {len(chunks)} chunks.")
+    print(f"✅ Loaded {len(chunks)} chunks.")
 
 
 @app.on_event("startup")
@@ -163,10 +166,11 @@ def startup():
 # ----------------------------
 # RAG
 # ----------------------------
+
 def run_rag(question: str, user_id: str):
 
     if not embeddings:
-        return "Trenutno nemam učitane podatke 😅"
+        return "⚠️ Nema učitanih dokumenata."
 
     q_embedding = embed_texts([question])[0]
 
@@ -186,6 +190,7 @@ def run_rag(question: str, user_id: str):
 # ----------------------------
 # SEND MESSAGE
 # ----------------------------
+
 def send_whatsapp_message(to, text):
 
     url = "https://api.wasenderapi.com/api/send-message"
@@ -208,11 +213,12 @@ def send_whatsapp_message(to, text):
 # ----------------------------
 # WEBHOOK
 # ----------------------------
+
 @app.post("/webhook")
 async def webhook(req: Request):
 
     data = await req.json()
-    print("📩 RAW JSON:", data)
+    print("📩 RAW:", data)
 
     try:
         msg_obj = data.get("data", {}).get("messages", {})
@@ -222,19 +228,19 @@ async def webhook(req: Request):
             or msg_obj.get("messageBody")
         )
 
-        user_id = msg_obj.get("key", {}).get("remoteJid")
+        sender = msg_obj.get("key", {}).get("remoteJid")
 
     except Exception as e:
-        print("❌ ERROR PARSING:", e)
+        print("❌ PARSE ERROR:", e)
         return {"status": "error"}
 
-    if not message or not user_id:
+    if not message or not sender:
         return {"status": "ignored"}
 
-    print(f"📩 Poruka od {user_id}: {message}")
+    print(f"📩 Poruka od {sender}: {message}")
 
-    answer = run_rag(message, user_id)
+    answer = run_rag(message, sender)
 
-    send_whatsapp_message(user_id, answer)
+    send_whatsapp_message(sender, answer)
 
     return {"status": "ok"}
