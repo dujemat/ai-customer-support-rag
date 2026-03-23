@@ -32,9 +32,12 @@ RAG (PDF knowledge base)**.
     .
     ├── app.py
     ├── requirements.txt
+    └── runtime.txt
     ├── .env
     ├── docs/           # PDF knowledge base
     └── README.md
+    └── prompts/
+    └── support_prompt.py
 
 ------------------------------------------------------------------------
 
